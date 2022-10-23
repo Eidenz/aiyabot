@@ -7,6 +7,7 @@ import json
 import asyncio
 import discord
 from discord.ext import commands
+from discord.commands import OptionChoice
 from typing import Optional
 import base64
 from discord import option
@@ -27,7 +28,7 @@ else:
 
 class QueueObject:
     def __init__(self, ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed,
-                 strength, init_image):
+                 strength, init_image, simple_prompt):
         self.ctx = ctx
         self.prompt = prompt
         self.negative_prompt = negative_prompt
@@ -39,6 +40,7 @@ class QueueObject:
         self.seed = seed
         self.strength = strength
         self.init_image = init_image
+        self.simple_prompt = simple_prompt
 
 class StableCog(commands.Cog, name='Stable Diffusion', description='Create images from natural language.'):
     def __init__(self, bot):
@@ -61,6 +63,11 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         self.data_ind = 0
         PayloadFormatter.setup()
         PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.TXT2IMG)
+        
+    with open('resources/styles.csv',encoding='utf-8') as csv_file:
+        style_data = list(csv.reader(csv_file, delimiter='|'))
+    with open('resources/artists.csv',encoding='utf-8') as csv_file:
+        artist_data = list(csv.reader(csv_file, delimiter='|'))
 
     @commands.slash_command(name = "draw", description = "Create an image")
     @option(
@@ -74,6 +81,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         str,
         description='Negative prompts to exclude from output.',
         required=False,
+    )
+    @option(
+        'data_model',
+        str,
+        description='Select the dataset for image generation',
+        required=True,
+        choices=['Generic', 'Anime']
     )
     @option(
         'steps',
@@ -117,6 +131,20 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         required=False,
     )
     @option(
+        'styles',
+        str,
+        description='Preset themes to enhance the generated image.',
+        required=False,
+        choices=[OptionChoice(name=row[0], value=row[1]) for row in style_data[1:]]
+    )
+    @option(
+        'artists',
+        str,
+        description='Preset artists to influence the generated image.',
+        required=False,
+        choices=[OptionChoice(name=row[0], value=row[1]) for row in artist_data[1:]]
+    )
+    @option(
         'strength',
         float,
         description='The amount in which init_image will be altered (0.0 to 1.0).'
@@ -129,19 +157,27 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     )
     async def dream_handler(self, ctx: discord.ApplicationContext, *,
                             prompt: str, negative_prompt: str = '',
+                            data_model: str = 'Generic',
                             steps: Optional[int] = 30,
                             height: Optional[int] = 512, width: Optional[int] = 512,
                             guidance_scale: Optional[float] = 7.0,
                             sampler: Optional[str] = 'Euler a',
                             seed: Optional[int] = -1,
+                            styles: Optional[str] = None, artists: Optional[str] = None,
                             strength: Optional[float] = 0.75,
                             init_image: Optional[discord.Attachment] = None,):
         print(f'Request -- {ctx.author.name}#{ctx.author.discriminator} -- Prompt: {prompt}')
         #confirm indices from PayloadFormatter
+        PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.TXT2IMG)
         print(f'Indices-prompt:{self.prompt_ind}, exclude:{self.exclude_ind}, steps:{self.sample_ind}, height:{self.resy_ind}, width:{self.resx_ind}, cfg scale:{self.conform_ind}, sampler:{self.sampling_methods_ind}, seed:{self.seed_ind}')
         if init_image:
             PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.IMG2IMG)
             print(f'Indices-denoising strength:{self.denoise_ind}, init image:{self.data_ind}')
+    
+        #janky sd_model selector
+        if data_model == 'Anime': t2i_model = open('resources\json\wd_payload.json')
+        else: t2i_model = open('resources\json\sd_payload.json')
+        self.postSD = json.load(t2i_model)
 
         if seed == -1: seed = random.randint(0, 0xFFFFFFFF)
         #increment number of times command is used
@@ -156,10 +192,14 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             for row in message_data: self.wait_message.append( row[0] )
         
         #log the command. can replace bot reply with {copy_command} for easy copy-pasting
-        copy_command = f'/draw prompt:{prompt} negative_prompt:{negative_prompt} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
+        copy_command = f'/draw prompt:{prompt} negative_prompt:{negative_prompt} data_model:{data_model} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
         if init_image: copy_command = copy_command + f' strength:{strength}'
         print(copy_command)
-        
+
+        simple_prompt = prompt
+        #append to prompt if styles and/or artists are selected
+        if styles is not None: prompt = prompt + ", " + styles
+        if artists is not None: prompt = prompt + ", " + artists
         #formatting bot initial reply
         append_options = ''
         if negative_prompt != '': append_options = append_options + '\nNegative Prompt: ``' + str(negative_prompt) + '``'
@@ -167,6 +207,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         if width != 512: append_options = append_options + '\nWidth: ``' + str(width) + '``'
         if guidance_scale != 7.0: append_options = append_options + '\nGuidance Scale: ``' + str(guidance_scale) + '``'
         if sampler != 'Euler a': append_options = append_options + '\nSampler: ``' + str(sampler) + '``'
+        if styles is not None: append_options = append_options + "\nStyle: ``" + str(styles) + "``"
+        if artists is not None: append_options = append_options + "\nArtist: ``" + str(artists) + "``"
         if init_image: append_options = append_options + '\nStrength: ``' + str(strength) + '``'
         
         #setup the queue
@@ -179,11 +221,11 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             if user_already_in_queue:
                 await ctx.send_response(content=f'Please wait! You\'re queued up.', ephemeral=True)
             else:   
-                self.queue.append(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image))
-                await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{prompt}``\nSteps: ``{steps}`` - Seed: ``{seed}``{append_options}')
+                self.queue.append(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt))
+                await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{simple_prompt}``\nDataset: ``{data_model}`` - Steps: ``{steps}`` - Seed: ``{seed}``{append_options}')
         else:
-            await self.process_dream(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image))
-            await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{prompt}``\nSteps: ``{steps}`` - Seed: ``{seed}``{append_options}')
+            await self.process_dream(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt))
+            await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{simple_prompt}``\nDataset: ``{data_model}`` - Steps: ``{steps}`` - Seed: ``{seed}``{append_options}')
 
     async def process_dream(self, queue_object: QueueObject):
         self.dream_thread = Thread(target=self.dream,
@@ -215,6 +257,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             postObj['data'][self.seed_ind] = queue_object.seed
 
             #send payload to webui
+            response = requests.post(self.url, json=self.postSD)
             global s
             with requests.Session() as s:
                 if os.environ.get('USER'):
@@ -233,7 +276,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             picture = discord.File(response.json()['data'][0][0]['name'])
             embed = discord.Embed()
             embed.colour = embed_color
-            embed.add_field(name='My drawing of', value=f'``{queue_object.prompt}``', inline=False)
+            embed.add_field(name='My drawing of', value=f'``{queue_object.simple_prompt}``', inline=False)
             embed.add_field(name='took me', value='``{0:.3f}`` seconds'.format(end_time-start_time), inline=False)
             if queue_object.ctx.author.avatar is None:
                 embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}')
