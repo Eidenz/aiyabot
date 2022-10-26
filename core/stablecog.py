@@ -1,7 +1,8 @@
 import traceback
 from asyncio import AbstractEventLoop
 from threading import Thread
-
+import os
+import io
 import requests
 import json
 import asyncio
@@ -9,20 +10,26 @@ import discord
 from discord.ext import commands
 from discord.commands import OptionChoice
 from typing import Optional
+from PIL import Image, PngImagePlugin
 import base64
 from discord import option
 import random
 import time
 import csv
 
-import os
-
-from core import PayloadFormatter
 
 embed_color = discord.Colour.from_rgb(222, 89, 28)
 global URL
-if os.environ.get('URL')=='':
+global DIR
+
+if os.environ.get('DIR') == '':
+    DIR = "outputs"
+    print('Using outputs directory: outputs')
+else:
+    DIR = os.environ.get('DIR')
+if os.environ.get('URL') == '':
     URL = 'http://127.0.0.1:7860'
+    print('Using Default URL: http://127.0.0.1:7860')
 else:
     URL = os.environ.get('URL')
 
@@ -49,27 +56,14 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         self.queue = []
         self.wait_message = []
         self.bot = bot
-        self.url = URL + '/api/predict'
-        #initialize indices for PayloadFormatter then format
-        self.prompt_ind = 0
-        self.exclude_ind = 0
-        self.sample_ind = 0
-        self.resy_ind = 0
-        self.resx_ind = 0
-        self.conform_ind = 0
-        self.sampling_methods_ind = 0
-        self.seed_ind = 0
-        self.denoise_ind = 0
-        self.data_ind = 0
-        PayloadFormatter.setup()
-        PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.TXT2IMG)
+        self.url = URL
         
     with open('resources/styles.csv',encoding='utf-8') as csv_file:
         style_data = list(csv.reader(csv_file, delimiter='|'))
     with open('resources/artists.csv',encoding='utf-8') as csv_file:
         artist_data = list(csv.reader(csv_file, delimiter='|'))
 
-    @commands.slash_command(name = "draw", description = "Create an image")
+    @commands.slash_command(name = 'draw', description = 'Create an image')
     @option(
         'prompt',
         str,
@@ -167,13 +161,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                             strength: Optional[float] = 0.75,
                             init_image: Optional[discord.Attachment] = None,):
         print(f'Request -- {ctx.author.name}#{ctx.author.discriminator} -- Prompt: {prompt}')
-        #confirm indices from PayloadFormatter
-        PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.TXT2IMG)
-        print(f'Indices-prompt:{self.prompt_ind}, exclude:{self.exclude_ind}, steps:{self.sample_ind}, height:{self.resy_ind}, width:{self.resx_ind}, cfg scale:{self.conform_ind}, sampler:{self.sampling_methods_ind}, seed:{self.seed_ind}')
-        if init_image:
-            PayloadFormatter.do_format(self, PayloadFormatter.PayloadFormat.IMG2IMG)
-            print(f'Indices-denoising strength:{self.denoise_ind}, init image:{self.data_ind}')
-    
+
         #janky sd_model selector
         if data_model == 'Anime': t2i_model = open('resources\json\wd_payload.json')
         else: t2i_model = open('resources\json\sd_payload.json')
@@ -181,9 +169,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
         if seed == -1: seed = random.randint(0, 0xFFFFFFFF)
         #increment number of times command is used
-        with open("resources/stats.txt", 'r') as f: data = list(map(int, f.readlines()))
+        with open('resources/stats.txt', 'r') as f: data = list(map(int, f.readlines()))
         data[0] = data[0] + 1
-        with open("resources/stats.txt", 'w') as f: f.write('\n'.join(str(x) for x in data))
+        with open('resources/stats.txt', 'w') as f: f.write('\n'.join(str(x) for x in data))
         
         #random messages for bot to say
         with open('resources/messages.csv') as csv_file:
@@ -236,54 +224,75 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     def dream(self, event_loop: AbstractEventLoop, queue_object: QueueObject):
         try:
             start_time = time.time()
-            #load copy of payload into memory
-            if queue_object.init_image is not None:
-                f = open('imgdata.json')
-                postObj = json.load(f)
-                image = base64.b64encode(requests.get(queue_object.init_image.url, stream=True).content).decode('utf-8')
-                postObj['data'][self.denoise_ind] = queue_object.strength
-                postObj['data'][self.data_ind] = "data:image/png;base64," + image
-            else:
-                f = open('data.json')
-                postObj = json.load(f)
 
-            postObj['data'][self.prompt_ind] = queue_object.prompt
-            postObj['data'][self.exclude_ind] = queue_object.negative_prompt
-            postObj['data'][self.sample_ind] = queue_object.steps
-            postObj['data'][self.resy_ind] = queue_object.height
-            postObj['data'][self.resx_ind] = queue_object.width
-            postObj['data'][self.conform_ind] = queue_object.guidance_scale
-            postObj['data'][self.sampling_methods_ind] = queue_object.sampler
-            postObj['data'][self.seed_ind] = queue_object.seed
+            #construct the payload
+            payload = {
+                "prompt": queue_object.prompt,
+                "negative_prompt": queue_object.negative_prompt,
+                "steps": queue_object.steps,
+                "height": queue_object.height,
+                "width": queue_object.width,
+                "cfg_scale": queue_object.guidance_scale,
+                "sampler_index": queue_object.sampler,
+                "seed": queue_object.seed,
+                "seed_resize_from_h": 0,
+                "seed_resize_from_w": 0,
+                "denoising_strength": None
+            }
+            if queue_object.init_image is not None:
+                image = base64.b64encode(requests.get(queue_object.init_image.url, stream=True).content).decode('utf-8')
+                img_payload = {
+                    "init_images": [
+                        'data:image/png;base64,' + image
+                    ],
+                    "denoising_strength": queue_object.strength
+                }
+                payload.update(img_payload)
+
+            payload_json = json.dumps(payload)
 
             #send payload to webui
             response = requests.post(self.url, json=self.postSD)
             global s
             with requests.Session() as s:
                 if os.environ.get('USER'):
-                    LogInPayload = {
+                    login_payload = {
                     'username': os.getenv('USER'),
                     'password': os.getenv('PASS')
                     }
-                    p = s.post(URL + '/login', data=LogInPayload)
+                    p = s.post(URL + '/login', data=login_payload)
                 else:
                     p = s.post(URL + '/login')
-                response = s.post(self.url, json=postObj)
+                if queue_object.init_image is not None:
+                    response = requests.post(url=f'{self.url}/sdapi/v1/img2img', data=payload_json).json()
+                else:
+                    response = requests.post(url=f'{self.url}/sdapi/v1/txt2img', data=payload_json).json()
 
             end_time = time.time()
 
+            #save local copy of image
+            for i in response['images']:
+                image = Image.open(io.BytesIO(base64.b64decode(i)))
+                metadata = PngImagePlugin.PngInfo()
+                epoch_time = int(time.time())
+                metadata.add_text("parameters", str(response['info']))
+                image.save(f'{DIR}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png', pnginfo=metadata)
+
             #post to discord
-            picture = discord.File(response.json()['data'][0][0]['name'])
-            embed = discord.Embed()
-            embed.colour = embed_color
-            embed.add_field(name='My drawing of', value=f'``{queue_object.simple_prompt}``', inline=False)
-            embed.add_field(name='took me', value='``{0:.3f}`` seconds'.format(end_time-start_time), inline=False)
-            if queue_object.ctx.author.avatar is None:
-                embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}')
-            else:
-                embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}', icon_url=queue_object.ctx.author.avatar.url)
-            event_loop.create_task(
-                queue_object.ctx.channel.send(content=f'<@{queue_object.ctx.author.id}>', embed=embed, file=picture))
+            with io.BytesIO() as buffer:
+                image.save(buffer, 'PNG')
+                buffer.seek(0)
+                embed = discord.Embed()
+                embed.colour = embed_color
+                embed.add_field(name='My drawing of', value=f'``{queue_object.prompt}``', inline=False)
+                embed.add_field(name='took me', value='``{0:.3f}`` seconds'.format(end_time-start_time), inline=False)
+                if queue_object.ctx.author.avatar is None:
+                    embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}')
+                else:
+                    embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}', icon_url=queue_object.ctx.author.avatar.url)
+                event_loop.create_task(
+                    queue_object.ctx.channel.send(content=f'<@{queue_object.ctx.author.id}>', embed=embed,
+                                                  file=discord.File(fp=buffer, filename=f'{queue_object.seed}.png')))
 
         except Exception as e:
             embed = discord.Embed(title='txt2img failed', description=f'{e}\n{traceback.print_exc()}',
