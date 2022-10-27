@@ -9,41 +9,17 @@ from core.logging import get_logger
 
 
 #start up initialization stuff
-global URL
 self = discord.Bot()
 intents = discord.Intents.default()
 intents.members = True
 load_dotenv()
 embed_color = discord.Colour.from_rgb(222, 89, 28)
-responsestr = {}
 self.logger = get_logger(__name__)
 
 file_exists = exists('resources/stats.txt')
 if file_exists is False:
     self.logger.info(f'stats.txt missing. Creating new file.')
     with open('resources/stats.txt', 'w') as f: f.write('0')
-
-if os.environ.get('URL') == '':
-    URL = 'http://127.0.0.1:7860'
-    print('Using Default URL: http://127.0.0.1:7860')
-else:
-    URL = os.environ.get('URL')
-
-with requests.Session() as s:
-    if os.environ.get('USER'):
-        if os.environ.get('PASS') == '':
-            raise SystemExit('There is no password set. Please set a password in the .env file.')
-        else:
-            LogInPayload = {
-                'username': os.getenv('USER'),
-                'password': os.getenv('PASS')
-            }
-        print('Logging into the API')
-        p = s.post(URL + '/login', data=LogInPayload)
-    else:
-        print('No Username Set')
-        p = s.post(URL + '/login')
-    r = s.get(URL + '/config')
 
 self.load_extension('core.stablecog')
 self.load_extension('core.tipscog')
@@ -65,7 +41,7 @@ async def on_ready():
 async def on_message(message):
     if message.author == self.user:
         try:
-            if message.embeds[0].fields[0].name == 'command':
+            if message.embeds[0].fields[0].name == 'My drawing of':
                 await message.add_reaction('❌')
         except:
             pass

@@ -22,20 +22,28 @@ embed_color = discord.Colour.from_rgb(222, 89, 28)
 global URL
 global DIR
 
-if os.environ.get('DIR') == '':
-    DIR = "outputs"
-    print('Using outputs directory: outputs')
+#check .env for URL and DIR. if they don't exist, ignore it and go with defaults.
+if os.getenv("URL") is not None:
+    URL = os.environ.get('URL').rstrip("/")
+    print(f'Using URL: {URL}')
 else:
-    DIR = os.environ.get('DIR')
-if os.environ.get('URL') == '':
     URL = 'http://127.0.0.1:7860'
     print('Using Default URL: http://127.0.0.1:7860')
+
+if os.getenv("DIR") is not None:
+    DIR = os.environ.get('DIR')
+    print(f'Using outputs directory: {DIR}')
 else:
-    URL = os.environ.get('URL')
+    DIR = "outputs"
+    print('Using default outputs directory: outputs')
+#if directory in DIR doesn't exist, create it
+dir_exists = os.path.exists(DIR)
+if dir_exists is False:
+    print(f'The folder for DIR doesn\'t exist! Creating folder at {DIR}.')
+    os.mkdir(DIR)
 
 class QueueObject:
-    def __init__(self, ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed,
-                 strength, init_image, simple_prompt):
+    def __init__(self, ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt, copy_command):
         self.ctx = ctx
         self.prompt = prompt
         self.negative_prompt = negative_prompt
@@ -48,6 +56,7 @@ class QueueObject:
         self.strength = strength
         self.init_image = init_image
         self.simple_prompt = simple_prompt
+        self.copy_command = copy_command
 
 class StableCog(commands.Cog, name='Stable Diffusion', description='Create images from natural language.'):
     def __init__(self, bot):
@@ -180,7 +189,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             for row in message_data: self.wait_message.append( row[0] )
         
         #log the command. can replace bot reply with {copy_command} for easy copy-pasting
-        copy_command = f'/draw prompt:{prompt} negative_prompt:{negative_prompt} data_model:{data_model} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
+        copy_command = f'/draw prompt:{prompt} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
+        if negative_prompt != '': copy_command = copy_command + f' negative_prompt:{negative_prompt}'
         if init_image: copy_command = copy_command + f' strength:{strength}'
         print(copy_command)
 
@@ -209,10 +219,10 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
             if user_already_in_queue:
                 await ctx.send_response(content=f'Please wait! You\'re queued up.', ephemeral=True)
             else:   
-                self.queue.append(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt))
+                self.queue.append(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt, copy_command))
                 await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{simple_prompt}``\nDataset: ``{data_model}`` - Steps: ``{steps}`` - Seed: ``{seed}``{append_options}')
         else:
-            await self.process_dream(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt))
+            await self.process_dream(QueueObject(ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt, copy_command))
             await ctx.send_response(f'<@{ctx.author.id}>, {self.wait_message[random.randint(0, message_row_count)]}\nQueue: ``{len(self.queue)}`` - ``{simple_prompt}``\nDataset: ``{data_model}`` - Steps: ``{steps}`` - Seed: ``{seed}``{append_options}')
 
     async def process_dream(self, queue_object: QueueObject):
@@ -253,16 +263,16 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
             #send payload to webui
             response = requests.post(self.url, json=self.postSD)
-            global s
+
             with requests.Session() as s:
                 if os.environ.get('USER'):
                     login_payload = {
                     'username': os.getenv('USER'),
                     'password': os.getenv('PASS')
                     }
-                    p = s.post(URL + '/login', data=login_payload)
+                    s.post(URL + '/login', data=login_payload)
                 else:
-                    p = s.post(URL + '/login')
+                    s.post(URL + '/login')
                 if queue_object.init_image is not None:
                     response = requests.post(url=f'{self.url}/sdapi/v1/img2img', data=payload_json).json()
                 else:
@@ -277,6 +287,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 epoch_time = int(time.time())
                 metadata.add_text("parameters", str(response['info']))
                 image.save(f'{DIR}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png', pnginfo=metadata)
+                print(f'Saved image: {DIR}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png')
 
             #post to discord
             with io.BytesIO() as buffer:
@@ -284,7 +295,10 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 buffer.seek(0)
                 embed = discord.Embed()
                 embed.colour = embed_color
-                embed.add_field(name='My drawing of', value=f'``{queue_object.prompt}``', inline=False)
+                if os.getenv("COPY") is not None:
+                    embed.add_field(name='My drawing of', value=f'``{queue_object.copy_command}``', inline=False)
+                else:
+                    embed.add_field(name='My drawing of', value=f'``{queue_object.prompt}``', inline=False)
                 embed.add_field(name='took me', value='``{0:.3f}`` seconds'.format(end_time-start_time), inline=False)
                 if queue_object.ctx.author.avatar is None:
                     embed.set_footer(text=f'{queue_object.ctx.author.name}#{queue_object.ctx.author.discriminator}')
