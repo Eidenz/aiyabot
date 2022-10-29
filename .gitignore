@@ -5,6 +5,7 @@ venv
 
 outputs/*.png
 resources/stats.txt
+resources/*.json
 
 .env
 start.bat

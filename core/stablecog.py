@@ -16,31 +16,8 @@ from discord import option
 import random
 import time
 import csv
+from core import settings
 
-
-embed_color = discord.Colour.from_rgb(222, 89, 28)
-global URL
-global DIR
-
-#check .env for URL and DIR. if they don't exist, ignore it and go with defaults.
-if os.getenv("URL") is not None:
-    URL = os.environ.get('URL').rstrip("/")
-    print(f'Using URL: {URL}')
-else:
-    URL = 'http://127.0.0.1:7860'
-    print('Using Default URL: http://127.0.0.1:7860')
-
-if os.getenv("DIR") is not None:
-    DIR = os.environ.get('DIR')
-    print(f'Using outputs directory: {DIR}')
-else:
-    DIR = "outputs"
-    print('Using default outputs directory: outputs')
-#if directory in DIR doesn't exist, create it
-dir_exists = os.path.exists(DIR)
-if dir_exists is False:
-    print(f'The folder for DIR doesn\'t exist! Creating folder at {DIR}.')
-    os.mkdir(DIR)
 
 class QueueObject:
     def __init__(self, ctx, prompt, negative_prompt, steps, height, width, guidance_scale, sampler, seed, strength, init_image, simple_prompt, copy_command):
@@ -65,7 +42,6 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         self.queue = []
         self.wait_message = []
         self.bot = bot
-        self.url = URL
         
     with open('resources/styles.csv',encoding='utf-8') as csv_file:
         style_data = list(csv.reader(csv_file, delimiter='|'))
@@ -95,9 +71,9 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
     @option(
         'steps',
         int,
-        description='The amount of steps to sample the model. Default: 30',
+        description='The amount of steps to sample the model.',
+        min_value=1,
         required=False,
-        choices=[x for x in range(5, 55, 5)]
     )
     @option(
         'height',
@@ -125,7 +101,6 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         description='The sampler to use for generation. Default: Euler a',
         required=False,
         choices=['Euler a', 'Euler', 'LMS', 'Heun', 'DPM2', 'DPM2 a', 'DPM fast', 'DPM adaptive', 'LMS Karras', 'DPM2 Karras', 'DPM2 a Karras', 'DDIM', 'PLMS'],
-        default='Euler a'
     )
     @option(
         'seed',
@@ -159,12 +134,12 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         required=False,
     )
     async def dream_handler(self, ctx: discord.ApplicationContext, *,
-                            prompt: str, negative_prompt: str = '',
+                            prompt: str, negative_prompt: str = 'unset',
                             data_model: str = 'Generic',
-                            steps: Optional[int] = 30,
+                            steps: Optional[int] = -1,
                             height: Optional[int] = 512, width: Optional[int] = 512,
                             guidance_scale: Optional[float] = 7.0,
-                            sampler: Optional[str] = 'Euler a',
+                            sampler: Optional[str] = 'unset',
                             seed: Optional[int] = -1,
                             styles: Optional[str] = None, artists: Optional[str] = None,
                             strength: Optional[float] = 0.75,
@@ -176,38 +151,64 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
         else: t2i_model = open('resources\json\sd_payload.json')
         self.postSD = json.load(t2i_model)
 
+        #update defaults with any new defaults from settingscog
+        guild = '% s' % ctx.guild_id
+        if negative_prompt == 'unset':
+            negative_prompt = settings.read(guild)['negative_prompt']
+        if steps == -1:
+            steps = settings.read(guild)['default_steps']
+        if sampler == 'unset':
+            sampler = settings.read(guild)['sampler']
+
         if seed == -1: seed = random.randint(0, 0xFFFFFFFF)
         #increment number of times command is used
-        with open('resources/stats.txt', 'r') as f: data = list(map(int, f.readlines()))
+        with open('resources/stats.txt', 'r') as f:
+            data = list(map(int, f.readlines()))
         data[0] = data[0] + 1
-        with open('resources/stats.txt', 'w') as f: f.write('\n'.join(str(x) for x in data))
+        with open('resources/stats.txt', 'w') as f:
+            f.write('\n'.join(str(x) for x in data))
         
         #random messages for bot to say
         with open('resources/messages.csv') as csv_file:
             message_data = list(csv.reader(csv_file, delimiter='|'))
             message_row_count = len(message_data) - 1
-            for row in message_data: self.wait_message.append( row[0] )
+            for row in message_data:
+                self.wait_message.append( row[0] )
         
-        #log the command. can replace bot reply with {copy_command} for easy copy-pasting
-        copy_command = f'/draw prompt:{prompt} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
-        if negative_prompt != '': copy_command = copy_command + f' negative_prompt:{negative_prompt}'
-        if init_image: copy_command = copy_command + f' strength:{strength}'
-        print(copy_command)
-
         simple_prompt = prompt
         #append to prompt if styles and/or artists are selected
         if styles is not None: prompt = prompt + ", " + styles
         if artists is not None: prompt = prompt + ", " + artists
         #formatting bot initial reply
         append_options = ''
-        if negative_prompt != '': append_options = append_options + '\nNegative Prompt: ``' + str(negative_prompt) + '``'
-        if height != 512: append_options = append_options + '\nHeight: ``' + str(height) + '``'
-        if width != 512: append_options = append_options + '\nWidth: ``' + str(width) + '``'
-        if guidance_scale != 7.0: append_options = append_options + '\nGuidance Scale: ``' + str(guidance_scale) + '``'
-        if sampler != 'Euler a': append_options = append_options + '\nSampler: ``' + str(sampler) + '``'
-        if styles is not None: append_options = append_options + "\nStyle: ``" + str(styles) + "``"
-        if artists is not None: append_options = append_options + "\nArtist: ``" + str(artists) + "``"
-        if init_image: append_options = append_options + '\nStrength: ``' + str(strength) + '``'
+        #lower step value to highest setting if user goes over max steps
+        if steps > settings.read(guild)['max_steps']:
+            steps = settings.read(guild)['max_steps']
+            append_options = append_options + '\nExceeded maximum of ``' + str(steps) + '`` steps! This is the best I can do...'
+        if negative_prompt != '':
+            append_options = append_options + '\nNegative Prompt: ``' + str(negative_prompt) + '``'
+        if height != 512:
+            append_options = append_options + '\nHeight: ``' + str(height) + '``'
+        if width != 512:
+            append_options = append_options + '\nWidth: ``' + str(width) + '``'
+        if guidance_scale != 7.0:
+            append_options = append_options + '\nGuidance Scale: ``' + str(guidance_scale) + '``'
+        if sampler != 'Euler a':
+            append_options = append_options + '\nSampler: ``' + str(sampler) + '``'
+        if styles is not None:
+            append_options = append_options + "\nStyle: ``" + str(styles) + "``"
+        if artists is not None:
+            append_options = append_options + "\nArtist: ``" + str(artists) + "``"
+        if init_image:
+            append_options = append_options + '\nStrength: ``' + str(strength) + '``'
+
+        # log the command. can replace bot reply with {copy_command} for easy copy-pasting
+        copy_command = f'/draw prompt:{prompt} steps:{steps} height:{str(height)} width:{width} guidance_scale:{guidance_scale} sampler:{sampler} seed:{seed}'
+        if negative_prompt != '':
+            copy_command = copy_command + f' negative_prompt:{negative_prompt}'
+        if init_image:
+            copy_command = copy_command + f' strength:{strength}'
+        print(copy_command)
         
         #setup the queue
         if self.dream_thread.is_alive():
@@ -270,13 +271,13 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                     'username': os.getenv('USER'),
                     'password': os.getenv('PASS')
                     }
-                    s.post(URL + '/login', data=login_payload)
+                    s.post(settings.global_var.url + '/login', data=login_payload)
                 else:
-                    s.post(URL + '/login')
+                    s.post(settings.global_var.url + '/login')
                 if queue_object.init_image is not None:
-                    response = requests.post(url=f'{self.url}/sdapi/v1/img2img', data=payload_json).json()
+                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', data=payload_json).json()
                 else:
-                    response = requests.post(url=f'{self.url}/sdapi/v1/txt2img', data=payload_json).json()
+                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', data=payload_json).json()
 
             end_time = time.time()
 
@@ -286,15 +287,15 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 metadata = PngImagePlugin.PngInfo()
                 epoch_time = int(time.time())
                 metadata.add_text("parameters", str(response['info']))
-                image.save(f'{DIR}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png', pnginfo=metadata)
-                print(f'Saved image: {DIR}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png')
+                image.save(f'{settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png', pnginfo=metadata)
+                print(f'Saved image: {settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png')
 
             #post to discord
             with io.BytesIO() as buffer:
                 image.save(buffer, 'PNG')
                 buffer.seek(0)
                 embed = discord.Embed()
-                embed.colour = embed_color
+                embed.colour = settings.global_var.embed_color
                 if os.getenv("COPY") is not None:
                     embed.add_field(name='My drawing of', value=f'``{queue_object.copy_command}``', inline=False)
                 else:
@@ -310,7 +311,7 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
 
         except Exception as e:
             embed = discord.Embed(title='txt2img failed', description=f'{e}\n{traceback.print_exc()}',
-                                  color=embed_color)
+                                  color=settings.global_var.embed_color)
             event_loop.create_task(queue_object.ctx.channel.send(embed=embed))
         if self.queue:
             event_loop.create_task(self.process_dream(self.queue.pop(0)))
