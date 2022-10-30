@@ -1,21 +1,20 @@
+import asyncio
+import base64
+import csv
+import discord
+import io
+import os
+import random
+import requests
+import time
 import traceback
 from asyncio import AbstractEventLoop
-from threading import Thread
-import os
-import io
-import requests
-import json
-import asyncio
-import discord
-from discord.ext import commands
-from discord.commands import OptionChoice
-from typing import Optional
-from PIL import Image, PngImagePlugin
-import base64
 from discord import option
-import random
-import time
-import csv
+from discord.ext import commands
+from PIL import Image, PngImagePlugin
+from threading import Thread
+from typing import Optional
+
 from core import settings
 
 
@@ -260,10 +259,8 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 }
                 payload.update(img_payload)
 
-            payload_json = json.dumps(payload)
-
             #send payload to webui
-            response = requests.post(self.url, json=self.postSD)
+            response = requests.post(url=f'{settings.global_var.url}/api/predict', json=self.postSD)
 
             with requests.Session() as s:
                 if os.environ.get('USER'):
@@ -275,20 +272,23 @@ class StableCog(commands.Cog, name='Stable Diffusion', description='Create image
                 else:
                     s.post(settings.global_var.url + '/login')
                 if queue_object.init_image is not None:
-                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', data=payload_json).json()
+                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/img2img', json=payload)
                 else:
-                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', data=payload_json).json()
-
+                    response = requests.post(url=f'{settings.global_var.url}/sdapi/v1/txt2img', json=payload)
+            response_data = response.json()
             end_time = time.time()
 
+            #create safe/sanitized filename
+            keep_chars = (' ', '.', '_')
+            file_name = "".join(c for c in queue_object.prompt if c.isalnum() or c in keep_chars).rstrip()
             #save local copy of image
-            for i in response['images']:
-                image = Image.open(io.BytesIO(base64.b64decode(i)))
+            for i in response_data['images']:
+                image = Image.open(io.BytesIO(base64.b64decode(i.split(",",1)[1])))
                 metadata = PngImagePlugin.PngInfo()
                 epoch_time = int(time.time())
-                metadata.add_text("parameters", str(response['info']))
-                image.save(f'{settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png', pnginfo=metadata)
-                print(f'Saved image: {settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{queue_object.prompt[0:120]}.png')
+                metadata.add_text("parameters", str(response_data['info']))
+                image.save(f'{settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{file_name[0:120]}.png', pnginfo=metadata)
+                print(f'Saved image: {settings.global_var.dir}\{epoch_time}-{queue_object.seed}-{file_name[0:120]}.png')
 
             #post to discord
             with io.BytesIO() as buffer:
