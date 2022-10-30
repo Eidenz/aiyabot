@@ -3,6 +3,7 @@ import base64
 import csv
 import discord
 import io
+import json
 import os
 import random
 import requests
@@ -11,6 +12,7 @@ import traceback
 from asyncio import AbstractEventLoop
 from discord import option
 from discord.ext import commands
+from discord.commands import OptionChoice
 from PIL import Image, PngImagePlugin
 from threading import Thread
 from typing import Optional
